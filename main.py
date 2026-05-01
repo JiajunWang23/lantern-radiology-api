@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
 import re
@@ -6,142 +6,198 @@ import re
 app = FastAPI()
 
 # ---------------------------------------------------------------------------
-# Vocabulary tables
+# Category definitions — ordered most specific first
 # ---------------------------------------------------------------------------
-
-MODALITY_GROUPS = {
-    "MRI":   ["MRI", "MR ", " MR,", "MAGNETIC RESONANCE"],
-    "CT":    ["CT ", " CT,", "CT/", "/CT", "CAT SCAN", "COMPUTED TOM", "CTPA"],
-    "XR":    ["XR", "X-RAY", "XRAY", "RADIOGRAPH", "AP AND LAT", "PA AND LAT",
-              "CHEST PA", "PORTABLE", "PLAIN FILM", "SCOUT", "KUB"],
-    "US":    ["ULTRASOUND", "SONOGRAM", "SONO", "ECHO "],
-    "NM":    ["NUCLEAR MED", "PET", "SPECT", "BONE SCAN", "SCINTIGRAPH", "NM "],
-    "MG":    ["MAMMOGRAM", "MAMMO"],
-    "FL":    ["FLUORO", "BARIUM", "SWALLOW", "ENEMA", "ESOPHAG"],
-    "ANGIO": ["ANGIO", "ARTERIOGRAM", "VENOGRAM", "MYELOGRAM", "FISTULOGRAM"],
-}
-
-# Ordered: more specific terms first to avoid false matches
-BODY_PARTS = {
-    "BRAIN":      ["BRAIN", "CEREBR", "INTRACRANIAL", "STROKE", "NEURO"],
-    "HEAD":       ["HEAD", "CRANIAL", "SKULL"],
-    "ORBIT":      ["ORBIT", "OPTIC NERVE"],
-    "IAC":        ["IAC", "INTERNAL AUDITORY"],
-    "FACE":       ["FACE", "FACIAL", "MANDIBLE", "MAXILLA", "TMJ", "JAW"],
-    "SINUS":      ["SINUS", "PARANASAL"],
-    "PITUITARY":  ["PITUITARY", "SELLA"],
-    "NECK":       ["SOFT TISSUE NECK", "NECK SOFT", "THYROID", "CAROTID",
-                   "LARYNX", "PHARYNX", "NASOPHARYNX", "OROPHARYNX"],
-    "SPINE_C":    ["CERVICAL SPINE", "C-SPINE", "C SPINE", "CSPINE"],
-    "SPINE_T":    ["THORACIC SPINE", "T-SPINE", "T SPINE", "TSPINE"],
-    "SPINE_L":    ["LUMBAR SPINE", "L-SPINE", "L SPINE", "LSPINE", "LUMBOSACRAL", "LUMBAR"],
-    "SPINE_S":    ["SACRUM", "SACRAL", "COCCYX"],
-    "WHOLE_SPINE":["WHOLE SPINE", "TOTAL SPINE", "SCOLIOSIS SURVEY", "SCOLIOSIS SERIES"],
-    "CHEST":      ["CHEST", "THORAX", "THORACIC"],
-    "LUNG":       ["LUNG", "PULM", "BRONCH", "PLEURAL"],
-    "HEART":      ["CARDIAC", "HEART", "CORONARY", "MYOCARDIAL", "PERICARDIAL", "AORTA"],
-    "MEDIASTINUM":["MEDIASTIN"],
-    "BREAST":     ["BREAST", "MAMMARY"],
-    "ABDOMEN":    ["ABDOMEN", "ABDOM", "ABD ", "LIVER", "PANCREAS", "SPLEEN",
-                   "GALLBLADDER", "BILIARY", "BOWEL", "COLON", "STOMACH",
-                   "INTESTIN", "MESENTERY", "OMENTUM", "RETROPERITON"],
-    "KIDNEY":     ["RENAL", "KIDNEY", "URETER", "URINARY TRACT", "ADRENAL"],
-    "PELVIS":     ["PELVIS", "PELVIC", "BLADDER", "UTERUS", "UTERINE",
-                   "OVARY", "OVARIAN", "PROSTATE", "RECTUM", "PERINEUM", "SCROTUM"],
-    "SHOULDER":   ["SHOULDER", "ACROMIOCLAVICULAR", "AC JOINT", "ROTATOR"],
-    "HUMERUS":    ["HUMERUS"],
-    "ELBOW":      ["ELBOW"],
-    "FOREARM":    ["FOREARM", "RADIUS", "ULNA"],
-    "WRIST":      ["WRIST"],
-    "HAND":       ["HAND", "FINGER", "THUMB", "METACARP"],
-    "UPPER_EXT":  ["UPPER EXTREM", "UPPER EX"],
-    "HIP":        ["HIP", "FEMORAL HEAD", "ACETABUL"],
-    "FEMUR":      ["FEMUR", "THIGH"],
-    "KNEE":       ["KNEE", "PATELLA", "MENISCUS"],
-    "TIBIA":      ["TIBIA", "FIBULA", "LOWER LEG"],
-    "ANKLE":      ["ANKLE"],
-    "FOOT":       ["FOOT", "FEET", "TOE ", "TOES", "CALCANEUS", "HEEL", "METATARS"],
-    "LOWER_EXT":  ["LOWER EXTREM", "LOWER EX"],
-    "WHOLE_BODY": ["WHOLE BODY", "TOTAL BODY", "TRAUMA SERIES"],
-}
-
-# Anatomically adjacent groups — any overlap within a group counts as related
-ADJACENCY_GROUPS = [
-    {"BRAIN", "HEAD", "ORBIT", "IAC", "FACE", "SINUS", "PITUITARY"},
-    {"HEAD", "NECK", "SPINE_C"},
-    {"NECK", "SPINE_C"},
-    {"SPINE_C", "SPINE_T"},
-    {"SPINE_T", "SPINE_L"},
-    {"SPINE_L", "SPINE_S"},
-    {"WHOLE_SPINE", "SPINE_C", "SPINE_T", "SPINE_L", "SPINE_S"},
-    {"CHEST", "LUNG", "HEART", "MEDIASTINUM"},
-    {"CHEST", "ABDOMEN"},   # overlap region (lower chest / upper abdomen)
-    {"ABDOMEN", "KIDNEY"},
-    {"ABDOMEN", "PELVIS"},
-    {"PELVIS", "KIDNEY"},
-    {"UPPER_EXT", "SHOULDER", "HUMERUS", "ELBOW", "FOREARM", "WRIST", "HAND"},
-    {"LOWER_EXT", "HIP", "FEMUR", "KNEE", "TIBIA", "ANKLE", "FOOT"},
-    {"WHOLE_BODY"},  # anything vs whole-body is relevant
+CATEGORIES = [
+    ("BONE_SCAN",   ["BONE SCAN", "BONE SURVEY", "BONE WHOLE BODY"]),
+    ("PET_CT",      ["PET/CT", "PET-CT", "PET CT", "PET SCAN", "FDG PET"]),
+    ("NM_LUNG",     ["NM PUL", "LUNG PERFUSION", "VENTILATION PERFUSION", "V/Q", "VQ SCAN", "PULMONARY PERFUSION"]),
+    ("NM_LYMPH",    ["LYMPHOCNT", "LYMPHOSCINTIGRAPHY", "SENTINEL", "NM LYMPH"]),
+    ("DXA",         ["BONE DENSITY", "DXA", "DEXA"]),
+    ("MAMMOGRAM",   ["MAMMOGR", "MAMMOGRAPHY", "MAM ", "MAM/", "MAMM",
+                     "DIGITAL SCREENER", "DIGITAL SCREEN", "BILAT-SCREENING",
+                     "SCREENING - COMBO", "STANDARD SCREENING", "SCREENING COMBO",
+                     "COMBOHD", "DX BILATERAL COMBO", "BILATERAL COMBO",
+                     "BILATERAL TOMO", "SCREENING W/CAD"]),
+    ("BREAST",      ["BREAST", "DIAG TARGET", "SCREEN COMP", "DIAG COMP",
+                     "SEED LOCALIZATION", "POST BX", "BIOPSY BREAST"]),
+    ("CARDIAC",     ["CARDIAC", "ECHO", "MYOCARD", "CORONARY", "PERICARDIAL",
+                     "MYO PERF", "LVEF", "EJECTION FRAC", "NM MYO",
+                     "NMmyo", "NMMY", " TTE", "/TTE", "LUM TTE", "CT FFR",
+                     "CARDIAC CATH", "CATH LAB"]),
+    ("CHEST",       ["CHEST", "LUNG", "PULM", "PLEURAL", "HEMOTHORAX",
+                     "PNEUMO", "PNEUMOTHORAX", "RIB", "CXR",
+                     "THORACENTESIS", "ESOPHAG", "STERNUM"]),
+    ("BRAIN",       ["BRAIN", "CEREBR", "INTRACRANIAL", "STROKE", "NEURO"]),
+    ("HEAD",        ["HEAD", "CRANIAL", "SKULL"]),
+    ("ORBIT",       ["ORBIT", "OPTIC NERVE"]),
+    ("IAC",         ["IAC", "INTERNAL AUDITORY"]),
+    ("FACE_SINUS",  ["FACE", "FACIAL", "SINUS", "PARANASAL", "MANDIBLE", "MAXILLA", "TMJ"]),
+    ("PITUITARY",   ["PITUITARY", "SELLA"]),
+    ("NECK",        ["SOFT TISSUE NECK", "NECK SOFT", "NECK ", "THYROID", "CAROTID",
+                     "LARYNX", "PHARYNX", "HYPOPHARYNX", "PAROTID", "SUBMANDIBULAR"]),
+    ("ABD_PEL",     ["ABD/PEL", "ABD_PEL", "ABDOMEN PELVIS", "ABDOMINAL PELVIS",
+                     "ABD PEL", "ABDPEL", "CHEST_ABD_PEL", "CHEST ABD PEL",
+                     "ABD AND PEL", "ABDOMEN AND PELVIS", "ENTEROGRAPHY"]),
+    ("ABDOMEN",     ["ABDOMEN", "ABDOM", "LIVER", "PANCREAS", "SPLEEN",
+                     "GALLBLADDER", "BILIARY", "BOWEL", "COLON", "STOMACH",
+                     "INTESTIN", "MESENTERY", "AORTA", "AAA", "HEPATIC",
+                     "SPLENIC", "PORTAL", "PARACENTESIS"]),
+    ("PELVIS",      ["PELVIS", "PELVIC", "BLADDER", "UTERUS", "UTERINE",
+                     "OVARY", "OVARIAN", "PROSTATE", "RECTUM", "PERINEUM",
+                     "SCROTUM", "TESTES", "TESTICULAR"]),
+    ("KIDNEY",      ["RENAL", "KIDNEY", "URETER", "NEPHRO", "URINARY TRACT"]),
+    ("SPINE_C",     ["CERVICAL SPINE", "CERVICL SPINE", "C-SPINE", "C SPINE", "CSPINE",
+                     "CERV SPINE", "CERVICL"]),
+    ("SPINE_T",     ["THORACIC SPINE", "T-SPINE", "T SPINE", "TSPINE"]),
+    ("SPINE_L",     ["LUMBAR SPINE", "L-SPINE", "LUMBOSACRAL", "LUMBAR", "SACRUM", "COCCYX"]),
+    ("SPINE_WHOLE", ["WHOLE SPINE", "TOTAL SPINE", "SCOLIOSIS SURVEY", "SCOLIOSIS SERIES",
+                     "SCOLIOSIS SRVY", "SCOLIOSIS"]),
+    ("SHOULDER",    ["SHOULDER", "ACROMIOCLAVICULAR", "AC JOINT", "ROTATOR"]),
+    ("HUMERUS",     ["HUMERUS"]),
+    ("ELBOW",       ["ELBOW"]),
+    ("FOREARM",     ["FOREARM", "RADIUS", "ULNA"]),
+    ("WRIST",       ["WRIST"]),
+    ("HAND",        ["HAND", "FINGER", "THUMB", "METACARP"]),
+    ("HIP",         ["HIP ", "FEMORAL HEAD", "ACETABUL"]),
+    ("FEMUR",       ["FEMUR", "THIGH"]),
+    ("KNEE",        ["KNEE", "PATELLA", "MENISCUS"]),
+    ("TIBIA",       ["TIBIA", "FIBULA", "LOWER LEG"]),
+    ("ANKLE",       ["ANKLE"]),
+    ("FOOT",        ["FOOT", "FEET", "TOE ", "CALCANEUS", "HEEL", "METATARS"]),
+    ("UPPER_EXT",   ["UPPER EXTREM", "UPPER EX"]),
+    ("LOWER_EXT",   ["LOWER EXTREM", "LOWER EX"]),
+    ("VASC_LE",     ["VENOUS IMAGING W", "VAS VENOUS", "DOPPLER LE ", "DOPPLER LE,",
+                     "DOPPLER BILAT LEG", "VENOUS DOPPLER LE", "VENOUS LOWER"]),
+    ("VASC_UE",     ["DOPPLER UE ", "VENOUS DOPPLER UE", "UP VENOUS STUDY",
+                     "UPPER EXTREMITY VENOUS"]),
 ]
 
+# Cross-category pairs that ARE relevant (True)
+CROSS_TRUE = {
+    frozenset(["MAMMOGRAM", "BREAST"]),
+    frozenset(["BRAIN", "HEAD"]),
+    frozenset(["ABDOMEN", "ABD_PEL"]),
+    frozenset(["PELVIS", "ABD_PEL"]),
+    frozenset(["ABDOMEN", "KIDNEY"]),
+    frozenset(["PELVIS", "KIDNEY"]),
+    frozenset(["SPINE_C", "SPINE_WHOLE"]),
+    frozenset(["SPINE_T", "SPINE_WHOLE"]),
+    frozenset(["SPINE_L", "SPINE_WHOLE"]),
+    frozenset(["NM_LYMPH", "MAMMOGRAM"]),
+    frozenset(["NM_LYMPH", "BREAST"]),
+    frozenset(["NM_LUNG", "CHEST"]),
+    # HEAD ↔ NECK removed: 103 FP vs 60 FN (net negative)
+    # CARDIAC ↔ CHEST removed: 193 FP vs 93 TP (net negative)
+}
+
+# Whole-body nuclear medicine: relevant to most organ systems
+WHOLE_BODY = {"BONE_SCAN", "PET_CT"}
+# These categories are irrelevant even vs whole body
+EXCLUDE_FROM_WHOLE_BODY = {"DXA"}
+
 
 # ---------------------------------------------------------------------------
-# Feature extraction
+# Laterality extraction (for mammography)
 # ---------------------------------------------------------------------------
+_LAT_RIGHT = re.compile(r'\b(RT|RIGHT|R)\b', re.IGNORECASE)
+_LAT_LEFT  = re.compile(r'\b(LT|LEFT|L)\b', re.IGNORECASE)
+_LAT_BI    = re.compile(r'\b(BI|BILAT|BILATERAL|BOTH)\b', re.IGNORECASE)
 
-def get_modality(desc: str) -> Optional[str]:
+
+def get_laterality(desc: str) -> str:
+    """Returns 'L', 'R', 'B' (bilateral), or 'U' (unknown)."""
     u = desc.upper()
-    for mod, kws in MODALITY_GROUPS.items():
+    has_bi = bool(_LAT_BI.search(u))
+    has_r  = bool(_LAT_RIGHT.search(u))
+    has_l  = bool(_LAT_LEFT.search(u))
+    if has_bi:
+        return 'B'
+    if has_r and has_l:
+        return 'B'
+    if has_r:
+        return 'R'
+    if has_l:
+        return 'L'
+    return 'U'
+
+
+def laterality_compatible(d1: str, d2: str) -> bool:
+    """Two descriptions are laterality-compatible if sides don't conflict."""
+    l1 = get_laterality(d1)
+    l2 = get_laterality(d2)
+    # If one is bilateral or unknown, always compatible
+    if 'U' in (l1, l2) or 'B' in (l1, l2):
+        return True
+    # Both specific: must be the same side
+    return l1 == l2
+
+
+# ---------------------------------------------------------------------------
+# Category detection
+# ---------------------------------------------------------------------------
+
+def get_category(desc: str) -> Optional[str]:
+    u = desc.upper()
+    for cat, kws in CATEGORIES:
         for kw in kws:
             if kw in u:
-                return mod
+                return cat
     return None
 
 
-def get_body_parts(desc: str) -> set:
-    u = desc.upper()
-    found = set()
-    for part, kws in BODY_PARTS.items():
-        for kw in kws:
-            if kw in u:
-                found.add(part)
-                break
-    return found
+# ---------------------------------------------------------------------------
+# Relevance prediction
+# ---------------------------------------------------------------------------
 
+def predict_relevance(cur_desc: str, pri_desc: str) -> bool:
+    cur_cat = get_category(cur_desc)
+    pri_cat = get_category(pri_desc)
 
-def parts_are_related(p1: set, p2: set) -> bool:
-    if not p1 or not p2:
-        return False
-    # Direct intersection
-    if p1 & p2:
+    NON_SYSTEMIC = {"SHOULDER", "HUMERUS", "ELBOW", "FOREARM", "WRIST", "HAND",
+                    "HIP", "FEMUR", "KNEE", "TIBIA", "ANKLE", "FOOT",
+                    "UPPER_EXT", "LOWER_EXT", "DXA"}
+    STAGING_CATS = {"CHEST", "ABD_PEL", "ABDOMEN", "PELVIS", "KIDNEY",
+                    "NECK", "HEAD", "BRAIN"}
+
+    if cur_cat in WHOLE_BODY or pri_cat in WHOLE_BODY:
+        if cur_cat in EXCLUDE_FROM_WHOLE_BODY or pri_cat in EXCLUDE_FROM_WHOLE_BODY:
+            return False
+
+        # BONE SCAN only cross-matches whole-body or staging CTs when it is the current study
+        if cur_cat == "BONE_SCAN":
+            if pri_cat in WHOLE_BODY or pri_cat in STAGING_CATS:
+                return True
+            return False
+        if pri_cat == "BONE_SCAN":
+            # As a prior, bone scan is only useful when current is also whole-body
+            return cur_cat in WHOLE_BODY
+
+        # PET/CT: relevant to most non-extremity categories
+        other_cat = pri_cat if cur_cat == "PET_CT" else cur_cat
+        if other_cat in NON_SYSTEMIC:
+            return False
         return True
-    # Anatomical adjacency
-    for grp in ADJACENCY_GROUPS:
-        if (p1 & grp) and (p2 & grp):
-            return True
+
+    # No category detected → conservative: False
+    if cur_cat is None or pri_cat is None:
+        return False
+
+    # Same category → True, but check laterality for breast imaging
+    if cur_cat == pri_cat:
+        if cur_cat in ("MAMMOGRAM", "BREAST"):
+            return laterality_compatible(cur_desc, pri_desc)
+        return True
+
+    # Cross-category explicit matches
+    pair = frozenset([cur_cat, pri_cat])
+    if pair in CROSS_TRUE:
+        # For MAMMOGRAM↔BREAST cross-match, also check laterality
+        if "MAMMOGRAM" in pair or "BREAST" in pair:
+            return laterality_compatible(cur_desc, pri_desc)
+        return True
+
     return False
-
-
-# ---------------------------------------------------------------------------
-# Relevance decision
-# ---------------------------------------------------------------------------
-
-def predict_relevance(current_desc: str, prior_desc: str) -> bool:
-    c_parts = get_body_parts(current_desc)
-    p_parts = get_body_parts(prior_desc)
-
-    # Both have body-part signals → decide on anatomy
-    if c_parts and p_parts:
-        return parts_are_related(c_parts, p_parts)
-
-    # At least one description yields no body part → fall back to modality
-    c_mod = get_modality(current_desc)
-    p_mod = get_modality(prior_desc)
-    if c_mod and p_mod:
-        return c_mod == p_mod
-
-    # No signal at all → conservative: show the prior
-    return True
 
 
 # ---------------------------------------------------------------------------
